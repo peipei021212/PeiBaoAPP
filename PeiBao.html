@@ -1,0 +1,253 @@
+
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>佩寶專屬報銷單 & 許願區</title>
+<style>
+  body { font-family: "Comic Sans MS", sans-serif; background: #f5f0fa; margin:0; padding:0; }
+  header { background:#b39ddb; color:white; padding:15px; text-align:center; font-size:1.5em; box-shadow:0 3px 6px rgba(0,0,0,0.2);}
+  main { padding:10px; }
+  .reimburse, .wish { background:white; padding:10px; margin-bottom:10px; border-radius:12px; box-shadow:0 2px 6px rgba(0,0,0,0.2); position:relative; transition: transform 0.3s; }
+  .reimburse.animate, .wish.animate { transform: scale(1.05); }
+  button { background:#7e57c2; color:white; border:none; padding:6px 12px; border-radius:8px; cursor:pointer; font-weight:bold; }
+  input, textarea { width:100%; padding:8px; margin:6px 0; border-radius:6px; border:1px solid #ccc; font-size:1em;}
+  .flex { display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
+  .coin-balance { margin-bottom:10px; font-weight:bold; font-size:1.1em; color:#5e35b1; }
+  img.receipt-thumb { max-width:60px; max-height:60px; margin-right:6px; border-radius:8px; cursor:pointer; border:2px solid #b39ddb; }
+  h3 { color:#6a1b9a; margin-top:20px; }
+</style>
+</head>
+<body>
+<header>💜 佩寶專屬報銷單 & 許願區 💜</header>
+<main>
+<div class="coin-balance">💰 金幣餘額: <span id="coinBalance">0</span></div>
+
+<!-- 報銷表單 -->
+<form id="reimburseForm">
+  <input type="text" id="item" placeholder="📝 品項" required>
+  <input type="number" id="amount" placeholder="💵 金額" required>
+  <input type="date" id="date" required>
+  <textarea id="reason" placeholder="理由 (選填)"></textarea>
+  <input type="file" id="receipt" accept="image/*">
+  <button type="submit">➕ 新增報銷</button>
+</form>
+
+<h3>報銷列表 📋</h3>
+<div id="list"></div>
+
+<hr>
+<h3>男友專區 🔒</h3>
+<label>輸入 PIN: <input type="password" id="pin"></label>
+<button id="loginBtn">登入</button>
+
+<div id="boyfriendPanel" style="display:none;">
+  <button id="approveAll">✅ 核銷所有</button>
+  <button id="addCoins">💰 爆金幣</button>
+  <div id="coinLogs"></div>
+</div>
+
+<hr>
+<h3>許願區 🌟</h3>
+<form id="wishForm">
+  <input type="text" id="wishText" placeholder="✨ 寫下你的願望..." required>
+  <button type="submit">➕ 新增願望</button>
+</form>
+<div id="wishList"></div>
+
+<!-- Firebase SDK (兼容版，簡單單檔 HTML 使用) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<script>
+// --- Firebase 初始化 ---
+const firebaseConfig = {
+  apiKey: "AIzaSyDTi3Bwe76XcTnruaJko5dkEewyQA7kWOk",
+  authDomain: "peibaoapp.firebaseapp.com",
+  projectId: "peibaoapp",
+  storageBucket: "peibaoapp.firebasestorage.app",
+  messagingSenderId: "103011187032",
+  appId: "1:103011187032:web:1423f0c661530142f10d2d",
+  measurementId: "G-7DDL5250PN"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// --- 本地資料 ---
+let reimbursements = [];
+let coins = [];
+let wishes = [];
+const PIN = '0516';
+
+// --- 儲存本地資料 ---
+function saveLocal(){
+  localStorage.setItem('reimbursements', JSON.stringify(reimbursements));
+  localStorage.setItem('coins', JSON.stringify(coins));
+  localStorage.setItem('wishes', JSON.stringify(wishes));
+}
+
+// --- 更新 UI ---
+function updateUI(){
+  const list = document.getElementById('list');
+  list.innerHTML='';
+  reimbursements.slice().reverse().forEach((r,iOrig)=>{
+    const div=document.createElement('div');
+    div.className='reimburse animate';
+    setTimeout(()=>div.classList.remove('animate'),300);
+    let thumbHTML = r.receiptData ? `<img class="receipt-thumb" src="${r.receiptData}" onclick="preview(${iOrig})">` : '';
+    div.innerHTML=`<div class="flex">${thumbHTML}<div>💖 <b>${r.item}</b> NT$${r.amount}<br>${r.date} ${r.reason||''}<br>
+      <button onclick="share(${iOrig})">📤 分享</button>
+    </div></div>`;
+    let pressTimer;
+    div.addEventListener('mousedown', ()=>{ pressTimer = setTimeout(()=>deleteReimburse(iOrig),800); });
+    div.addEventListener('touchstart', ()=>{ pressTimer = setTimeout(()=>deleteReimburse(iOrig),800); });
+    div.addEventListener('mouseup', ()=>{ clearTimeout(pressTimer); });
+    div.addEventListener('mouseleave', ()=>{ clearTimeout(pressTimer); });
+    div.addEventListener('touchend', ()=>{ clearTimeout(pressTimer); });
+    list.appendChild(div);
+  });
+
+  document.getElementById('coinBalance').textContent = coins.reduce((s,c)=>s+c.amount,0);
+  updateCoinLogs();
+  updateWishUI();
+}
+
+// --- 刪除報銷 ---
+function deleteReimburse(idx){
+  if(confirm(`確定要刪除 ${reimbursements[idx].item} 的報銷嗎？`)){
+    db.collection("reimbursements").doc(reimbursements[idx].id).delete();
+  }
+}
+
+// --- 預覽 & 分享 ---
+function preview(idx){
+  const r = reimbursements[idx];
+  if(r.receiptData){
+    const w = window.open("");
+    w.document.write(`<img src="${r.receiptData}" style="width:100%;">`);
+  }
+}
+function share(idx){
+  const r=reimbursements[idx];
+  const text=`親愛的，這是我的報銷申請 😊\n品項:${r.item}\n金額:NT$${r.amount}\n日期:${r.date}\n理由:${r.reason||''}`;
+  if(navigator.share){ navigator.share({text}); } else { alert(text); }
+}
+
+// --- 圖片縮小 ---
+function resizeImage(file, maxW=600,maxH=600,cb){
+  const reader = new FileReader();
+  reader.onload = evt=>{
+    const img=new Image();
+    img.onload=()=>{
+      let w=img.width,h=img.height;
+      if(w>maxW||h>maxH){ const scale=Math.min(maxW/w,maxH/h); w*=scale; h*=scale; }
+      const canvas=document.createElement('canvas'); canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      cb(canvas.toDataURL('image/png',0.8));
+    }; img.src=evt.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// --- 新增報銷 ---
+document.getElementById('reimburseForm').onsubmit=function(e){
+  e.preventDefault();
+  const fileInput = document.getElementById('receipt');
+  if(fileInput.files.length>0){
+    resizeImage(fileInput.files[0],600,600,data=>addReimburse(data));
+  } else addReimburse();
+};
+function addReimburse(data){
+  const r={
+    item: document.getElementById('item').value,
+    amount: Number(document.getElementById('amount').value),
+    date: document.getElementById('date').value,
+    reason: document.getElementById('reason').value,
+    receiptData:data||null
+  };
+  db.collection("reimbursements").add(r);
+  document.getElementById('reimburseForm').reset();
+}
+
+// --- 男友專區 ---
+document.getElementById('loginBtn').onclick=function(){
+  if(document.getElementById('pin').value===PIN){
+    document.getElementById('boyfriendPanel').style.display='block';
+    alert('男友專區已開啟');
+  } else alert('PIN 錯誤');
+};
+document.getElementById('approveAll').onclick=function(){
+  reimbursements.forEach(r=>{ db.collection("reimbursements").doc(r.id).update({approved:true}); });
+  alert('所有報銷已核銷 ✅');
+};
+document.getElementById('addCoins').onclick=function(){
+  const amount=Number(prompt('輸入金幣','10')); const note=prompt('備註','爆金幣');
+  if(!isNaN(amount)) db.collection("coins").add({amount,note,date:new Date().toISOString()});
+};
+
+// --- 更新金幣日誌 ---
+function updateCoinLogs(){
+  const logs=document.getElementById('coinLogs'); logs.innerHTML='';
+  coins.forEach(c=>{ const div=document.createElement('div'); div.textContent=`💰 ${c.amount} (${c.note})`; logs.appendChild(div); });
+}
+
+// --- 許願區 ---
+document.getElementById('wishForm').onsubmit=function(e){
+  e.preventDefault();
+  const text=document.getElementById('wishText').value.trim();
+  if(text!==''){ db.collection("wishes").add({text,date:new Date().toISOString()}); document.getElementById('wishText').value=''; }
+};
+function updateWishUI(){
+  const container=document.getElementById('wishList'); container.innerHTML='';
+  wishes.slice().reverse().forEach((w,i)=>{
+    const div=document.createElement('div'); div.className='wish animate';
+    setTimeout(()=>div.classList.remove('animate'),300);
+    div.textContent=`🌈 ${w.text} (${new Date(w.date).toLocaleDateString()})`;
+    let pressTimer;
+    div.addEventListener('mousedown',()=>{ pressTimer=setTimeout(()=>deleteWish(i),800); });
+    div.addEventListener('touchstart',()=>{ pressTimer=setTimeout(()=>deleteWish(i),800); });
+    div.addEventListener('mouseup',()=>{ clearTimeout(pressTimer); });
+    div.addEventListener('mouseleave',()=>{ clearTimeout(pressTimer); });
+    div.addEventListener('touchend',()=>{ clearTimeout(pressTimer); });
+    container.appendChild(div);
+  });
+}
+function deleteWish(idx){
+  if(confirm('確定刪除這個願望嗎？')){
+    db.collection("wishes").doc(wishes[idx].id).delete();
+  }
+}
+
+// --- Firestore 監聽同步 ---
+db.collection("reimbursements").onSnapshot(snapshot=>{
+  reimbursements = snapshot.docs.map(doc=>({...doc.data(), id:doc.id}));
+  saveLocal(); updateUI();
+});
+db.collection("coins").onSnapshot(snapshot=>{
+  coins = snapshot.docs.map(doc=>({...doc.data(), id:doc.id}));
+  saveLocal(); updateUI();
+});
+db.collection("wishes").onSnapshot(snapshot=>{
+  wishes = snapshot.docs.map(doc=>({...doc.data(), id:doc.id}));
+  saveLocal(); updateUI();
+});
+
+// --- 每日提醒 ---
+function dailyReminder(){
+  const today=new Date().toLocaleDateString();
+  const last=localStorage.getItem('lastReminder')||'';
+  if(last!==today){
+    localStorage.setItem('lastReminder',today);
+    const coinTotal=coins.reduce((s,c)=>s+c.amount,0);
+    const wishSummary=wishes.slice(-3).map(w=>w.text).join('\n')||'你還沒有願望喔～';
+    alert(`💰 今日金幣總數: ${coinTotal}\n📜 最近願望:\n${wishSummary}`);
+  }
+}
+
+// --- 初始化 ---
+updateUI(); dailyReminder();
+</script>
+</main>
+</body>
+</html>
